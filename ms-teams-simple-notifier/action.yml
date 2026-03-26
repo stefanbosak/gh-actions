@@ -1,0 +1,148 @@
+name: 'MS Teams simple notifier'
+description: 'Send simple notifications to Microsoft Teams'
+
+branding:
+  icon: 'send'
+  color: 'purple'
+
+inputs:
+  webhook-url:
+    description: 'Microsoft Teams webhook URL'
+    required: true
+
+  title:
+    description: 'Notification title'
+    required: true
+
+  message:
+    description: 'Notification message (optional)'
+    required: false
+    default: ''
+
+  status:
+    description: 'Status: success, failure, warning, or info'
+    required: false
+    default: 'info'
+
+outputs:
+  http-status:
+    description: 'HTTP status code from Teams webhook'
+    value: ${{ steps.send.outputs.status }}
+
+  success:
+    description: 'Whether notification was sent successfully (true/false)'
+    value: ${{ steps.send.outputs.success }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 'Send notification'
+      id: send
+      shell: bash
+      run: |
+        case "${{ inputs.status }}" in
+          success)
+            ICON="✅"
+            COLOR="Good"
+            ;;
+          failure)
+            ICON="❌"
+            COLOR="Attention"
+            ;;
+          warning)
+            ICON="⚠️"
+            COLOR="Warning"
+            ;;
+          *)
+            ICON="ℹ️"
+            COLOR="Accent"
+            ;;
+        esac
+
+        MESSAGE_TEXT="${{ inputs.message }}"
+        if [ -z "$MESSAGE_TEXT" ]; then
+          MESSAGE_TEXT="Workflow: ${{ github.workflow }} | Branch: ${{ github.ref_name }} | Triggered by: ${{ github.actor }}"
+        fi
+
+        PAYLOAD=$(cat <<EOF
+        {
+          "type": "message",
+          "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+              "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+              "type": "AdaptiveCard",
+              "version": "1.4",
+              "body": [
+                {
+                  "type": "TextBlock",
+                  "text": "$ICON ${{ inputs.title }}",
+                  "size": "Large",
+                  "weight": "Bolder",
+                  "color": "$COLOR"
+                },
+                {
+                  "type": "TextBlock",
+                  "text": "$MESSAGE_TEXT",
+                  "wrap": true,
+                  "spacing": "Small"
+                },
+                {
+                  "type": "FactSet",
+                  "spacing": "Medium",
+                  "facts": [
+                    {
+                      "title": "Repository:",
+                      "value": "${{ github.repository }}"
+                    },
+                    {
+                      "title": "Branch:",
+                      "value": "${{ github.ref_name }}"
+                    },
+                    {
+                      "title": "Actor:",
+                      "value": "${{ github.actor }}"
+                    },
+                    {
+                      "title": "Commit:",
+                      "value": "${{ github.ref_type == 'tag' && github.ref_name || '' }}${{ github.ref_type == 'tag' && ' (' || '' }}${{ github.sha }}${{ github.ref_type == 'tag' && ')' || '' }}"
+                    }
+                  ]
+                }
+              ],
+              "actions": [
+                {
+                  "type": "Action.OpenUrl",
+                  "title": "View Workflow",
+                  "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                },
+                {
+                  "type": "Action.OpenUrl",
+                  "title": "View Commit",
+                  "url": "${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+                }
+              ]
+            }
+          }]
+        }
+        EOF
+        )
+
+        echo "📤 Sending notification to Teams..."
+
+        HTTP_STATUS=$(curl -s -o /tmp/teams-response.txt -w "%{http_code}" \
+          -X POST "${{ inputs.webhook-url }}" \
+          -H "Content-Type: application/json" \
+          -d "$PAYLOAD")
+
+        echo "status=$HTTP_STATUS" >> $GITHUB_OUTPUT
+
+        if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+          echo "✅ Notification sent successfully (HTTP $HTTP_STATUS)"
+          echo "success=true" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Failed to send notification (HTTP $HTTP_STATUS)"
+          cat /tmp/teams-response.txt
+          echo "success=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi

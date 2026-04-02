@@ -4,7 +4,7 @@ A lightweight GitHub composite action that fetches the description of any GitHub
 
 ## How it works
 
-The action calls `GET /repos/{owner}/{repo}` via the GitHub API and extracts the `.description` field with `jq`, then writes it to `$GITHUB_OUTPUT` so downstream steps can reference it.
+The action uses [`actions/github-script`](https://github.com/actions/github-script) to call `GET /repos/{owner}/{repo}` via the built-in Octokit REST client and exposes the `.description` field as a step output via `core.setOutput`.
 
 ## Inputs
 
@@ -68,4 +68,4 @@ The action calls `GET /repos/{owner}/{repo}` via the GitHub API and extracts the
 
 - [GitHub REST API — Get a repository](https://docs.github.com/en/rest/repos/repos#get-a-repository)
 - [GitHub Actions — Defining outputs for jobs](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/passing-information-between-jobs)
-- [`jq` manual](https://jqlang.github.io/jq/manual/)
+- [`actions/github-script`](https://github.com/actions/github-script)

@@ -4,7 +4,7 @@ A GitHub composite action that identifies the previous successful workflow run, 
 
 ## How it works
 
-1. **Find previous run** — queries the GitHub Actions API to locate the most recent *successful* run of the same workflow on the same branch (excluding the current run).
+1. **Find previous run** — uses [`actions/github-script`](https://github.com/actions/github-script) to call the GitHub Actions REST API and locate the most recent *successful* run of the same workflow on the same branch (excluding the current run).
 2. **Download digest list** — fetches the `digests-all` artifact that was uploaded by that previous run (expected path inside the artifact: `/tmp/digests-all.txt`, one digest per line).
 3. **Delete manifests** — authenticates with the DockerHub Registry v2 API and issues a `DELETE /v2/<repo>/manifests/<digest>` request for every digest in the file.
 
@@ -63,6 +63,7 @@ sha256:def456...
 ## References
 
 - [GitHub Actions — Download Artifact (`actions/download-artifact`)](https://github.com/actions/download-artifact)
+- [GitHub Actions — `actions/github-script`](https://github.com/actions/github-script)
 - [GitHub REST API — List workflow runs](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow)
 - [Docker Registry HTTP API v2 — Delete Manifest](https://distribution.github.io/distribution/spec/api/#deleting-an-image)
 - [DockerHub Access Tokens](https://docs.docker.com/security/for-developers/access-tokens/)

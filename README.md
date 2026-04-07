@@ -7,6 +7,7 @@ A collection of reusable GitHub composite actions for common CI/CD tasks.
 | [cleanup-dockerhub-old-digests](#cleanup-dockerhub-old-digests) | Delete obsolete image manifests from DockerHub after a successful build |
 | [get-repo-description](#get-repo-description) | Fetch a GitHub repository's description via the API |
 | [ms-teams-simple-notifier](#ms-teams-simple-notifier) | Send formatted status notifications to Microsoft Teams |
+| [signed-verified-commit](#signed-verified-commit) | Commit and push files as a signed, verified commit via the GitHub GraphQL API |
 
 ---
 
@@ -126,3 +127,46 @@ Sends a richly formatted Adaptive Card notification to a Microsoft Teams channel
 📖 [Full documentation](./ms-teams-simple-notifier/README.md)
 
 **References:** [Microsoft Teams Incoming Webhooks](https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook) · [Adaptive Cards schema](https://adaptivecards.io/explorer/) · [Microsoft Teams Workflows app](https://support.microsoft.com/en-us/office/create-incoming-webhooks-with-workflows-for-microsoft-teams-8ae491c7-0394-4861-ba59-055e33f75498)
+
+---
+
+## signed-verified-commit
+
+**Path:** [`signed-verified-commit/`](./signed-verified-commit/)
+
+Commits and pushes one or more files to a branch using the GitHub GraphQL `createCommitOnBranch` mutation. Every commit is automatically **signed and marked as verified** by `github-actions[bot]` — no GPG key setup required. The target branch is resolved from the action input, the PR head ref, or the current `GITHUB_REF` (in that order), making it safe to use on both push and pull-request triggered workflows.
+
+### Quick usage
+
+```yaml
+- name: Commit and push (verified)
+  id: verified-commit
+  uses: YOUR_ORG/YOUR_REPO/.github/actions/signed-verified-commit@main
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    commit-message: 'chore: automated update [skip ci]'
+    files: |
+      output.txt
+      dist/bundle.js:build/output.js
+```
+
+### Inputs
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `github-token` | ✅ | — | GitHub token with `contents: write` permission |
+| `commit-message` | ✅ | — | Commit headline message |
+| `files` | ✅ | — | Newline-separated list of files (`repo/path` or `repo/path:local/path`) |
+| `branch` | ❌ | `''` | Target branch; defaults to PR head branch or the triggering branch |
+| `repository` | ❌ | `${{ github.repository }}` | Target repository in `owner/repo` format |
+
+### Outputs
+
+| Name | Description |
+|------|-------------|
+| `commit-sha` | SHA of the newly created commit |
+| `commit-url` | Web URL of the newly created commit |
+
+📖 [Full documentation](./signed-verified-commit/README.md)
+
+**References:** [GitHub GraphQL API — createCommitOnBranch](https://docs.github.com/en/graphql/reference/mutations#createcommitonbranch) · [actions/github-script](https://github.com/actions/github-script) · [Commit signature verification](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)

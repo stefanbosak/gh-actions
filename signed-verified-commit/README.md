@@ -18,6 +18,7 @@ A GitHub composite action that commits and pushes one or more files to a branch 
 | `files` | ✅ | — | Newline-separated list of files to commit (see [File syntax](#file-syntax)) |
 | `branch` | ❌ | `''` | Target branch. Defaults to the PR head branch or the branch that triggered the workflow |
 | `repository` | ❌ | `${{ github.repository }}` | Target repository in `owner/repo` format |
+| `signed-off` | ❌ | `'false'` | Append a `Signed-off-by` trailer to the commit body (Developer Certificate of Origin) |
 
 ### File syntax
 
@@ -56,6 +57,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: 'chore: automated update [skip ci]'
+          signed-off: 'true'
           files: |
             output.txt
             dist/bundle.js:build/output.js

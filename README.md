@@ -145,6 +145,7 @@ Commits and pushes one or more files to a branch using the GitHub GraphQL `creat
   with:
     github-token: ${{ secrets.GITHUB_TOKEN }}
     commit-message: 'chore: automated update [skip ci]'
+    signed-off: 'true'
     files: |
       output.txt
       dist/bundle.js:build/output.js
@@ -159,6 +160,7 @@ Commits and pushes one or more files to a branch using the GitHub GraphQL `creat
 | `files` | ✅ | — | Newline-separated list of files (`repo/path` or `repo/path:local/path`) |
 | `branch` | ❌ | `''` | Target branch; defaults to PR head branch or the triggering branch |
 | `repository` | ❌ | `${{ github.repository }}` | Target repository in `owner/repo` format |
+| `signed-off` | ❌ | `'false'` | Append a `Signed-off-by` DCO trailer to the commit body |
 
 ### Outputs
 

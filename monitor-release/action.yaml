@@ -1,0 +1,115 @@
+name: 'Monitor Release'
+description: 'Monitors a GitHub repository for new releases. Prefers a pre-release when it is newer than the latest stable release.'
+
+inputs:
+  project_owner:
+    description: 'Project repository owner'
+    required: true
+  project_repo:
+    description: 'Project repository name'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Get latest release and pre-release
+      id: latest
+      uses: actions/github-script@main
+      with:
+        script: |
+          const owner = '${{ inputs.project_owner }}';
+          const repo = '${{ inputs.project_repo }}';
+          const { data: releases } = await github.rest.repos.listReleases({ owner, repo, per_page: 10 });
+
+          const prerelease = releases.find(r => r.prerelease);
+          const release    = releases.find(r => !r.prerelease);
+
+          let tag  = '';
+          let type = '';
+
+          if (prerelease && release) {
+            const preDate = new Date(prerelease.published_at);
+            const relDate = new Date(release.published_at);
+            if (preDate > relDate) {
+              tag = prerelease.tag_name; type = 'prerelease';
+            } else {
+              tag = release.tag_name;    type = 'release';
+            }
+          } else if (prerelease) {
+            tag = prerelease.tag_name; type = 'prerelease';
+          } else if (release) {
+            tag = release.tag_name;    type = 'release';
+          }
+
+          console.log(tag ? `Selected ${type}: ${tag}` : 'No release found.');
+          core.setOutput('tag',  tag);
+          core.setOutput('type', type);
+
+    # Restore with a prefix — always gets the most recently saved entry
+    - name: Restore cached last-known tag
+      uses: actions/cache/restore@main
+      with:
+        path: .last-known-tag
+        key: last-known-${{ github.run_id }}   # never matches (forces restore-keys lookup)
+        restore-keys: last-known-              # matches any previously saved entry
+
+    - name: Read cached tag
+      id: cached
+      shell: bash
+      run: |
+        if [ -f .last-known-tag ]; then
+          echo "tag=$(cat .last-known-tag)" >> "$GITHUB_OUTPUT"
+        else
+          echo "tag=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Compare and trigger downstream workflow
+      if: steps.latest.outputs.tag != steps.cached.outputs.tag && steps.latest.outputs.tag != ''
+      uses: actions/github-script@main
+      with:
+        script: |
+          const tag       = '${{ steps.latest.outputs.tag }}';
+          const cachedTag = '${{ steps.cached.outputs.tag }}';
+          console.log(`New release detected: ${tag} (was: ${cachedTag || 'none'})`);
+          await github.rest.repos.createDispatchEvent({
+            owner: context.repo.owner,
+            repo:  context.repo.repo,
+            event_type: `new-${context.repo.repo}-release`,
+            client_payload: { tag },
+          });
+
+    - name: Save latest tag
+      if: steps.latest.outputs.tag != ''
+      shell: bash
+      run: echo "${{ steps.latest.outputs.tag }}" > .last-known-tag
+
+    # Save with a unique key each run — avoids the "already exists" conflict
+    - name: Update cache
+      if: steps.latest.outputs.tag != ''
+      uses: actions/cache/save@main
+      with:
+        path: .last-known-tag
+        key: last-known-${{ github.run_id }}
+
+    - name: Delete old caches
+      uses: actions/github-script@main
+      with:
+        script: |
+          const keyPrefix = 'last-known-';
+          const { data } = await github.rest.actions.getActionsCacheList({
+            owner: context.repo.owner,
+            repo:  context.repo.repo,
+            key:   keyPrefix,
+            per_page: 100,
+          });
+          const caches = data.actions_caches.sort(
+            (a, b) => new Date(b.created_at) - new Date(a.created_at)
+          );
+          for (const cache of caches.slice(1)) {
+            console.log(`Deleting old cache: ${cache.key} (id ${cache.id})`);
+            await github.rest.actions.deleteActionsCacheById({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              cache_id: cache.id,
+            });
+          }

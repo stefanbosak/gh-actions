@@ -117,7 +117,7 @@ Monitors a GitHub repository for new releases and fires a `repository_dispatch` 
 
 ### Outputs
 
-This action produces no declared outputs. When a new release is detected it fires a `repository_dispatch` event (`event_type: new-{project_repo}-release`, `client_payload.tag`) on the calling repository.
+This action produces no declared outputs. When a new release is detected it fires a `repository_dispatch` event (`event_type: new-release`, `client_payload.tag`) on the calling repository.
 
 ### Required permissions
 

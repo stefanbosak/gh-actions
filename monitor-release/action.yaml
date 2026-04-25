@@ -74,7 +74,7 @@ runs:
           await github.rest.repos.createDispatchEvent({
             owner: context.repo.owner,
             repo:  context.repo.repo,
-            event_type: `new-${context.repo.repo}-release`,
+            event_type: `new-release`,
             client_payload: { tag },
           });
 

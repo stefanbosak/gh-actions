@@ -74,7 +74,7 @@ This action produces no declared outputs. Side effects are described below.
 │ 3. Compare tags                              │
 │    if selected ≠ cached (and not empty)      │
 │    → github.repos.createDispatchEvent        │
-│       event_type: new-{repo}-release         │
+│       event_type: new-release                │
 │       client_payload: { tag }                │
 └───────────────────┬──────────────────────────┘
                     │
@@ -98,7 +98,7 @@ When a new release is detected, the action fires a dispatch event on the calling
 
 | Field | Value |
 |---|---|
-| `event_type` | `new-{project_repo}-release` |
+| `event_type` | `new-release` |
 | `client_payload.tag` | The newly detected tag (e.g. `v1.2.3`) |
 
 A downstream workflow can listen for this event:
@@ -106,7 +106,7 @@ A downstream workflow can listen for this event:
 ```yaml
 on:
   repository_dispatch:
-    types: [new-hello-world-release]
+    types: [new-release]
 
 jobs:
   handle:

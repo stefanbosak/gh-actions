@@ -1,0 +1,94 @@
+name: 'Cleanup older DockerHub digests'
+description: >
+  Obtains the previous successful workflow run, downloads its digests artifact,
+  and deletes those manifest digests from DockerHub Container Registry.
+
+inputs:
+  github-token:
+    description: 'GitHub token'
+    required: true
+  repository:
+    description: 'Repository in owner/repo format'
+    required: true
+  run-id:
+    description: 'Current workflow run ID (used to exclude it from the search)'
+    required: true
+  ref-name:
+    description: 'Branch or tag name used to filter previous workflow runs'
+    required: true
+  dh-user:
+    description: 'DockerHub username'
+    required: true
+  dh-token:
+    description: 'DockerHub token'
+    required: true
+  repository-name:
+    description: 'Repository name (without owner prefix)'
+    required: true
+
+outputs:
+  prev-run-id:
+    description: 'The ID of the previous successful workflow run (empty/null if none found)'
+    value: ${{ steps.prev_run.outputs.run_id }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 'Obtain previous successful workflow run ID'
+      id: prev_run
+      uses: actions/github-script@main
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const [owner, repo] = '${{ inputs.repository }}'.split('/');
+          const runId = parseInt('${{ inputs.run-id }}');
+
+          const { data: currentRun } = await github.rest.actions.getWorkflowRun({
+            owner, repo, run_id: runId
+          });
+
+          const { data: runsData } = await github.rest.actions.listWorkflowRuns({
+            owner,
+            repo,
+            workflow_id: currentRun.workflow_id,
+            branch: '${{ inputs.ref-name }}',
+            status: 'success',
+            per_page: 5
+          });
+
+          const prevRun = runsData.workflow_runs.find(r => r.id !== runId);
+          const prevRunId = prevRun ? String(prevRun.id) : '';
+          core.setOutput('run_id', prevRunId);
+          console.log(`Previous successful run_id: ${prevRunId || 'none'}`);
+
+
+    - name: 'Download all digests artifact'
+      if: ${{ steps.prev_run.outputs.run_id != '' && steps.prev_run.outputs.run_id != 'null' }}
+      uses: actions/download-artifact@main
+      with:
+        github-token: ${{ inputs.github-token }}
+        repository: ${{ inputs.repository }}
+        run-id: ${{ steps.prev_run.outputs.run_id }}
+        pattern: digests-all
+        path: /tmp/
+
+    - name: 'Clean older containers in DockerHub Container Registry'
+      shell: bash
+      run: |
+        DIGESTS_FILE="/tmp/digests-all.txt"
+        if [[ ! -f "${DIGESTS_FILE}" ]]; then
+          echo "No digests file found at ${DIGESTS_FILE}, skipping DockerHub cleanup."
+          exit 0
+        fi
+        REPO="${{ inputs.dh-user }}/${{ inputs.repository-name }}"
+        SCOPE="repository:${REPO}:pull,push,delete"
+        TOKEN=$(curl -fsSL \
+          -u "${{ inputs.dh-user }}:${{ inputs.dh-token }}" \
+          "https://auth.docker.io/token?service=registry.docker.io&scope=${SCOPE}" \
+          | jq -r .token)
+        for digest in $(cat "${DIGESTS_FILE}"); do
+          echo "Deleting ${REPO}@${digest}"
+          curl -i -X DELETE \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://registry-1.docker.io/v2/${REPO}/manifests/${digest}"
+        done

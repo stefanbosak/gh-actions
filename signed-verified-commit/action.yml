@@ -1,0 +1,133 @@
+name: Signed and verified Commit and Push
+description: >
+  Commits and pushes files (signed by github-actions[bot]).
+
+inputs:
+  github-token:
+    description: 'GitHub token (secrets.GITHUB_TOKEN)'
+    required: true
+  branch:
+    description: >
+      Branch to commit to. Defaults to the branch that triggered the workflow.
+      For pull_request events the PR head branch is used automatically.
+    required: false
+    default: ''
+  commit-message:
+    description: 'Commit message'
+    required: true
+  repository:
+    description: >
+      Target repository in "owner/repo" format.
+      Defaults to the repository where the workflow is running.
+    required: false
+    default: ${{ github.repository }}
+  files:
+    description: >
+      Newline-separated list of files to commit.
+      Each entry is either:
+        path/to/file              (repo path == local runner path)
+        repo/path:local/path      (different repo path and local path)
+    required: true
+  signed-off:
+    description: >
+      Append a "Signed-off-by: github-actions[bot]"
+    required: false
+    default: 'false'
+
+outputs:
+  commit-sha:
+    description: 'The SHA of the created commit'
+    value: ${{ steps.commit.outputs.commit-sha }}
+  commit-url:
+    description: 'The URL of the created commit'
+    value: ${{ steps.commit.outputs.commit-url }}
+
+runs:
+  using: composite
+  steps:
+    # Resolve branch: input > PR head_ref > GITHUB_REF
+    - name: Resolve target branch
+      id: resolve-branch
+      shell: bash
+      env:
+        INPUT_BRANCH: ${{ inputs.branch }}
+        EVENT_NAME: ${{ github.event_name }}
+        HEAD_REF: ${{ github.head_ref }}
+      run: |
+        if [ -n "$INPUT_BRANCH" ]; then
+          echo "branch=$INPUT_BRANCH" >> "$GITHUB_OUTPUT"
+        elif [ "$EVENT_NAME" = "pull_request" ]; then
+          echo "branch=$HEAD_REF" >> "$GITHUB_OUTPUT"
+        else
+          echo "branch=${GITHUB_REF#refs/heads/}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Commit and push (verified)
+      id: commit
+      uses: actions/github-script@main
+      env:
+        TARGET_BRANCH: ${{ steps.resolve-branch.outputs.branch }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        FILES_INPUT: ${{ inputs.files }}
+        SIGNED_OFF: ${{ inputs.signed-off }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+
+          const [owner, repo] = '${{ inputs.repository }}'.split('/');
+          const branch        = process.env.TARGET_BRANCH;
+          const commitMessage = process.env.COMMIT_MESSAGE;
+          const signedOff     = process.env.SIGNED_OFF === 'true';
+          const signedOffTrailer = 'Signed-off-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>';
+          const commitBody    = signedOff ? signedOffTrailer : undefined;
+
+          // Parse FILES_INPUT: "repo/path:local/path" or "path" (same for both)
+          const additions = process.env.FILES_INPUT
+            .split('\n')
+            .map(l => l.trim())
+            .filter(Boolean)
+            .map(entry => {
+              const [repoPath, localPath = repoPath] = entry.split(':');
+              return {
+                path: repoPath.trim(),
+                contents: Buffer.from(fs.readFileSync(localPath.trim())).toString('base64'),
+              };
+            });
+
+          if (!additions.length) {
+            core.setFailed('No files specified to commit.');
+            return;
+          }
+
+          // Get the current HEAD OID for the target branch (required by the mutation)
+          const { data: refData } = await github.rest.git.getRef({
+            owner, repo,
+            ref: `heads/${branch}`,
+          });
+          const expectedHeadOid = refData.object.sha;
+          core.info(`Target branch: ${branch} @ ${expectedHeadOid}`);
+          core.info(`Committing ${additions.length} file(s): ${additions.map(f => f.path).join(', ')}`);
+
+          // Create the verified commit via GraphQL createCommitOnBranch mutation
+          const result = await github.graphql(`
+            mutation ($input: CreateCommitOnBranchInput!) {
+              createCommitOnBranch(input: $input) {
+                commit { url oid }
+              }
+            }
+          `, {
+            input: {
+              branch: { repositoryNameWithOwner: `${owner}/${repo}`, branchName: branch },
+              message: { headline: commitMessage, body: commitBody },
+              fileChanges: { additions },
+              expectedHeadOid,
+            },
+          });
+
+          const { url, oid } = result.createCommitOnBranch.commit;
+          core.info(`Verified commit pushed to '${branch}': ${oid}`);
+          core.info(`Commit URL: ${url}`);
+
+          core.setOutput('commit-sha', oid);
+          core.setOutput('commit-url', url);

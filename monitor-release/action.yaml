@@ -1,0 +1,189 @@
+name: 'Monitor Release'
+description: >
+  Monitors one or more GitHub repositories for new releases.
+  Accepts a JSON array or object of (owner, repo) pairs.
+  Prefers a pre-release when it is newer than the latest stable release.
+  Supports tagprefix to track individual subprojects within a monorepo.
+
+inputs:
+  projects:
+    description: |
+      JSON array of {owner, repo, usetag?, tagprefix?} objects, or a JSON object mapping owner → repo.
+      Array:  [{"owner":"acme","repo":"widget"},{"owner":"acme","repo":"gadget","usetag":true}]
+      Object: {"acme":"widget"}
+      usetag (default false): when true, resolves the latest version via git tags instead of
+      releases/pre-releases — useful when a project does not keep its GitHub Releases up-to-date.
+      tagprefix (optional): filter releases/tags by this prefix string. Useful for monorepos that
+      publish multiple subprojects with prefixed tags (e.g. "kyaml/" in kubernetes-sigs/kustomize).
+      Each unique owner/repo/tagprefix combination is tracked independently in the cache.
+      Example (kustomize subprojects):
+        [
+          {"owner":"kubernetes-sigs","repo":"kustomize","tagprefix":"kustomize/"},
+          {"owner":"kubernetes-sigs","repo":"kustomize","tagprefix":"kyaml/"}
+        ]
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Restore with a prefix — always gets the most recently saved entry
+    - name: Restore cached last-known tags
+      uses: actions/cache/restore@main
+      with:
+        path: .last-known-tags.json
+        key: last-known-${{ github.run_id }}   # never matches (forces restore-keys lookup)
+        restore-keys: last-known-              # matches any previously saved entry
+
+    - name: Fetch latest releases and dispatch on change
+      id: monitor
+      uses: actions/github-script@main
+      env:
+        PROJECTS: ${{ inputs.projects }}
+      with:
+        script: |
+          const fs = require('fs');
+
+          // Parse input — accept JSON array [{owner,repo},...] or object {owner:repo,...}
+          let raw;
+          try {
+            raw = JSON.parse(process.env.PROJECTS);
+          } catch (e) {
+            core.setFailed(`"projects" is not valid JSON: ${e.message}`);
+            return;
+          }
+
+          let pairs;
+          if (Array.isArray(raw)) {
+            pairs = raw;
+          } else if (raw && typeof raw === 'object') {
+            pairs = Object.entries(raw).map(([owner, repo]) => ({ owner, repo }));
+          } else {
+            core.setFailed('"projects" must be a JSON array or object');
+            return;
+          }
+
+          // Load cached per-repo tags
+          const cacheFile = '.last-known-tags.json';
+          let cached = {};
+          if (fs.existsSync(cacheFile)) {
+            try { cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch (_) {}
+          }
+
+          const updated = { ...cached };
+          const changes = [];   // all successfully fetched projects (full snapshot for payload)
+          let hasNewRelease = false;
+
+          for (const { owner, repo, usetag, tagprefix } of pairs) {
+            // Include tagprefix in the key so each subproject is tracked independently
+            const key = tagprefix ? `${owner}/${repo}#${tagprefix}` : `${owner}/${repo}`;
+            let tag = '', type = '', meta = {};
+
+            if (usetag) {
+              // Paginate through git tags to find the newest one matching the prefix
+              let found = null;
+              for (let page = 1; page <= 10 && !found; page++) {
+                let tags;
+                try {
+                  ({ data: tags } = await github.rest.repos.listTags({ owner, repo, per_page: 100, page }));
+                } catch (e) {
+                  console.log(`[${key}] Failed to fetch tags: ${e.message}`);
+                  break;
+                }
+                if (!tags.length) break;
+                found = tagprefix ? tags.find(t => t.name.startsWith(tagprefix)) : tags[0];
+              }
+              if (!found) { console.log(`[${key}] No matching tags found.`); continue; }
+              tag  = found.name;
+              type = 'tag';
+              meta = { commit: found.commit.sha };
+            } else {
+              // Paginate through releases (newest-first) until we have both a prerelease
+              // and a stable release matching the prefix, then apply "newer wins" logic
+              let prerelease = null, release = null;
+              for (let page = 1; page <= 10 && !(prerelease && release); page++) {
+                let releases;
+                try {
+                  ({ data: releases } = await github.rest.repos.listReleases({ owner, repo, per_page: 100, page }));
+                } catch (e) {
+                  console.log(`[${key}] Failed to fetch releases: ${e.message}`);
+                  break;
+                }
+                if (!releases.length) break;
+                const batch = tagprefix ? releases.filter(r => r.tag_name.startsWith(tagprefix)) : releases;
+                if (!prerelease) prerelease = batch.find(r => r.prerelease);
+                if (!release)    release    = batch.find(r => !r.prerelease);
+              }
+
+              let selected;
+              if (prerelease && release) {
+                const newer = new Date(prerelease.published_at) > new Date(release.published_at);
+                selected = newer ? prerelease : release;
+                type     = newer ? 'prerelease' : 'release';
+              } else if (prerelease) {
+                selected = prerelease; type = 'prerelease';
+              } else if (release) {
+                selected = release;    type = 'release';
+              }
+
+              if (selected) {
+                tag  = selected.tag_name;
+                meta = { published_at: selected.published_at, html_url: selected.html_url };
+              }
+            }
+
+            if (!tag) { console.log(`[${key}] No release found.`); continue; }
+            console.log(`[${key}] Selected ${type}: ${tag}`);
+
+            const cachedTag = cached[key] ?? '';
+            if (tag !== cachedTag) {
+              console.log(`[${key}] New release detected: ${tag} (was: ${cachedTag || 'none'})`);
+              hasNewRelease = true;
+            } else {
+              console.log(`[${key}] No change (${tag}).`);
+            }
+
+            changes.push({ owner, repo, tag, type, tagprefix: tagprefix ?? null, ...meta });
+            updated[key] = tag;
+          }
+
+          fs.writeFileSync(cacheFile, JSON.stringify(updated, null, 2));
+
+          if (hasNewRelease) {
+            console.log(`Dispatching new-release event (${changes.length} project(s) in payload).`);
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              event_type: 'new-release',
+              client_payload: { changes },
+            });
+          }
+
+    # Save with a unique key each run — avoids the "already exists" conflict
+    - name: Update cache
+      uses: actions/cache/save@main
+      with:
+        path: .last-known-tags.json
+        key: last-known-${{ github.run_id }}
+
+    - name: Delete old caches
+      uses: actions/github-script@main
+      with:
+        script: |
+          const keyPrefix = 'last-known-';
+          const { data } = await github.rest.actions.getActionsCacheList({
+            owner: context.repo.owner,
+            repo:  context.repo.repo,
+            key:   keyPrefix,
+            per_page: 100,
+          });
+          const caches = data.actions_caches.sort(
+            (a, b) => new Date(b.created_at) - new Date(a.created_at)
+          );
+          for (const cache of caches.slice(1)) {
+            console.log(`Deleting old cache: ${cache.key} (id ${cache.id})`);
+            await github.rest.actions.deleteActionsCacheById({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              cache_id: cache.id,
+            });
+          }

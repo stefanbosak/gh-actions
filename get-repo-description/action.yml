@@ -1,0 +1,29 @@
+name: 'Get Repository Description'
+description: 'Fetches the GitHub repository description via the GitHub API'
+
+inputs:
+  github-token:
+    description: 'GitHub token for API authentication'
+    required: true
+  repository:
+    description: 'Repository in owner/name format'
+    required: false
+    default: ${{ github.repository }}
+
+outputs:
+  description:
+    description: 'The repository description'
+    value: ${{ steps.fetch.outputs.description }}
+
+runs:
+  using: composite
+  steps:
+    - name: 'Fetch repository description'
+      id: fetch
+      uses: actions/github-script@main
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const [owner, repo] = '${{ inputs.repository }}'.split('/');
+          const { data } = await github.rest.repos.get({ owner, repo });
+          core.setOutput('description', data.description);

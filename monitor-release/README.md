@@ -2,6 +2,8 @@
 
 A composite GitHub Action that monitors one or more repositories for new releases and fires a `repository_dispatch` event whenever a new release is detected on any of them.
 
+> **Latest-release resolution** — for repositories without a `tagprefix`, the action uses GitHub's `GET /releases/latest` endpoint to identify the current stable release. This correctly surfaces newer major versions (e.g. Helm v4 over v3) the moment GitHub marks them *latest*, without relying on date-sorting heuristics.
+>
 > **Pre-release preference** — when the most recent pre-release is _newer_ than the latest stable release, the pre-release is treated as the current version.
 >
 > **Tag mode** — set `"usetag": true` on any entry to resolve the current version from git tags instead of GitHub Releases. Useful when a project pushes tags but does not maintain GitHub Releases.
@@ -158,12 +160,12 @@ This action produces no declared outputs. Side effects are described below.
 │                                                      │
 │    usetag=true            usetag=false (default)     │
 │    ────────────           ─────────────────────      │
-│    listTags API           listReleases API            │
-│    paginate (≤10×100)     paginate (≤10×100)         │
-│    filter by tagprefix    filter batch by tagprefix   │
-│    pick first match       pick newest pre-release     │
-│    type = "tag"            and newest stable;         │
-│    meta = {commit}         choose whichever is newer  │
+│    listTags API           no tagprefix:               │
+│    paginate (≤10×100)       getLatestRelease API      │
+│    filter by tagprefix    with tagprefix:             │
+│    pick first match         listReleases (≤10×100)   │
+│    type = "tag"           pick newest pre-release     │
+│    meta = {commit}         and "latest"; newer wins   │
 │                           type = "release"|"pre…"    │
 │                           meta = {published_at,       │
 │                                   html_url}           │
@@ -191,7 +193,11 @@ This action produces no declared outputs. Side effects are described below.
 
 1. **Restore cache** — uses `actions/cache` restore-keys to retrieve the previously recorded tag map from `.last-known-tags.json`. On the first run the file does not exist and all repos are treated as new.
 2. **Fetch, compare, and dispatch** — for each project entry, the resolution strategy depends on `usetag`:
-   - **Release mode** (`usetag` absent or `false`): paginates up to 10 pages of 100 releases each via `listReleases`. When `tagprefix` is set, each page is filtered to releases whose `tag_name` starts with the prefix; pagination stops as soon as both the most-recent prerelease and the most-recent stable release matching the prefix are found. Selects whichever is newer (pre-release preferred when newer than stable). Metadata included: `published_at`, `html_url`.
+   - **Release mode** (`usetag` absent or `false`): resolution varies by whether `tagprefix` is set.
+     - **No `tagprefix`**: calls `GET /repos/{owner}/{repo}/releases/latest` (GitHub's own *latest* designation — most-recent non-prerelease, non-draft release by `created_at`) for the stable candidate, then paginates `listReleases` to find the most-recent pre-release. Using the dedicated endpoint means a repository that has promoted a new major version to *latest* (e.g. Helm v4 over v3) is detected immediately.
+     - **With `tagprefix`**: paginates up to 10 pages of 100 releases via `listReleases`, filtering each page to releases whose `tag_name` starts with the prefix; pagination stops as soon as both the most-recent pre-release and stable release matching the prefix are found. (`getLatestRelease` is not prefix-aware, so pagination is required here.)
+
+     In both cases, selects whichever candidate is newer by `published_at` (pre-release wins when newer than stable). Metadata included: `published_at`, `html_url`.
    - **Tag mode** (`usetag: true`): paginates up to 10 pages of 100 tags each via `listTags` (newest first). When `tagprefix` is set, picks the first tag whose name starts with the prefix; otherwise picks the very first tag. Metadata included: `commit` (SHA). Useful when a project publishes git tags but does not maintain GitHub Releases.
 
    Each entry is identified by a **cache key** of `owner/repo` (no prefix) or `owner/repo#tagprefix` (with prefix), so multiple subprojects of the same repository are tracked independently. The selected tag is compared against the cached value for that key. If it differs, `hasNewRelease` is set to `true`. Either way the entry `{owner, repo, tag, type, tagprefix, …meta}` is appended to the `changes` array. After all pairs are processed, if `hasNewRelease` is `true` a single [`repository_dispatch`](https://docs.github.com/en/rest/repos/repos#create-a-repository-dispatch-event) event is fired; the `changes` payload always contains **all** successfully fetched projects — not just the ones that changed — so downstream workflows have a complete snapshot of every monitored repo. A failed API call for one pair is logged and skipped; the remaining pairs are processed normally.

@@ -2,6 +2,7 @@ name: 'Monitor Release'
 description: >
   Monitors one or more GitHub repositories for new releases.
   Accepts a JSON array or object of (owner, repo) pairs.
+  Uses GitHub's "latest" release designation (no tagprefix) or paginated lookup (tagprefix).
   Prefers a pre-release when it is newer than the latest stable release.
   Supports tagprefix to track individual subprojects within a monorepo.
 
@@ -97,21 +98,43 @@ runs:
               type = 'tag';
               meta = { commit: found.commit.sha };
             } else {
-              // Paginate through releases (newest-first) until we have both a prerelease
-              // and a stable release matching the prefix, then apply "newer wins" logic
+              // Without tagprefix: use GitHub's own "latest" release designation
+              // (GET /releases/latest — newest non-prerelease non-draft by created_at).
+              // This surfaces promoted major versions (e.g. helm v4 over v3) immediately.
+              // With tagprefix: getLatestRelease is not prefix-aware, so paginate for both.
               let prerelease = null, release = null;
-              for (let page = 1; page <= 10 && !(prerelease && release); page++) {
-                let releases;
+
+              if (!tagprefix) {
                 try {
-                  ({ data: releases } = await github.rest.repos.listReleases({ owner, repo, per_page: 100, page }));
+                  ({ data: release } = await github.rest.repos.getLatestRelease({ owner, repo }));
                 } catch (e) {
-                  console.log(`[${key}] Failed to fetch releases: ${e.message}`);
-                  break;
+                  if (e.status !== 404) console.log(`[${key}] Failed to fetch latest release: ${e.message}`);
                 }
-                if (!releases.length) break;
-                const batch = tagprefix ? releases.filter(r => r.tag_name.startsWith(tagprefix)) : releases;
-                if (!prerelease) prerelease = batch.find(r => r.prerelease);
-                if (!release)    release    = batch.find(r => !r.prerelease);
+                for (let page = 1; page <= 10 && !prerelease; page++) {
+                  let releases;
+                  try {
+                    ({ data: releases } = await github.rest.repos.listReleases({ owner, repo, per_page: 100, page }));
+                  } catch (e) {
+                    console.log(`[${key}] Failed to fetch releases: ${e.message}`);
+                    break;
+                  }
+                  if (!releases.length) break;
+                  prerelease = releases.find(r => r.prerelease);
+                }
+              } else {
+                for (let page = 1; page <= 10 && !(prerelease && release); page++) {
+                  let releases;
+                  try {
+                    ({ data: releases } = await github.rest.repos.listReleases({ owner, repo, per_page: 100, page }));
+                  } catch (e) {
+                    console.log(`[${key}] Failed to fetch releases: ${e.message}`);
+                    break;
+                  }
+                  if (!releases.length) break;
+                  const batch = releases.filter(r => r.tag_name.startsWith(tagprefix));
+                  if (!prerelease) prerelease = batch.find(r => r.prerelease);
+                  if (!release)    release    = batch.find(r => !r.prerelease);
+                }
               }
 
               let selected;

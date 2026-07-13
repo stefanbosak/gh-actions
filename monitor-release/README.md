@@ -4,7 +4,7 @@ A composite GitHub Action that monitors one or more repositories for new release
 
 > **Latest-release resolution** — for repositories without a `tagprefix`, the action uses GitHub's `GET /releases/latest` endpoint to identify the current stable release. This correctly surfaces newer major versions (e.g. Helm v4 over v3) the moment GitHub marks them *latest*, without relying on date-sorting heuristics.
 >
-> **Pre-release preference** — when the most recent pre-release is _newer_ than the latest stable release, the pre-release is treated as the current version.
+> **Pre-release preference** — when the most recent pre-release is _newer_ than the latest stable release, the pre-release is treated as the current version. Set `"preferlatest": true` on an entry to always prefer the latest stable release instead — useful when a project's pre-releases don't publish the required build artifacts.
 >
 > **Tag mode** — set `"usetag": true` on any entry to resolve the current version from git tags instead of GitHub Releases. Useful when a project pushes tags but does not maintain GitHub Releases.
 >
@@ -44,6 +44,18 @@ A composite GitHub Action that monitors one or more repositories for new release
       [
         {"owner": "octocat", "repo": "hello-world"},
         {"owner": "acme",    "repo": "legacy-lib", "usetag": true}
+      ]
+```
+
+### Prefer latest stable over a newer pre-release
+
+```yaml
+- uses: your-org/monitor-release@main
+  with:
+    projects: |
+      [
+        {"owner": "octocat", "repo": "hello-world"},
+        {"owner": "acme",    "repo": "flaky-prereleases", "preferlatest": true}
       ]
 ```
 
@@ -103,11 +115,11 @@ jobs:
 
 | Name | Required | Description |
 |---|---|---|
-| `projects` | ✅ | JSON **array** of `{owner, repo, usetag?, tagprefix?}` objects **or** a JSON **object** mapping `owner → repo`. See formats below. |
+| `projects` | ✅ | JSON **array** of `{owner, repo, usetag?, tagprefix?, preferlatest?}` objects **or** a JSON **object** mapping `owner → repo`. See formats below. |
 
 ### Input formats
 
-Both formats are supported. Per-project options (such as `usetag` and `tagprefix`) are only available in the **array** format.
+Both formats are supported. Per-project options (such as `usetag`, `tagprefix`, and `preferlatest`) are only available in the **array** format.
 
 **Array** — preferred when you have multiple repos under different owners, or need per-project options:
 
@@ -116,7 +128,8 @@ Both formats are supported. Per-project options (such as `usetag` and `tagprefix
   {"owner": "acme", "repo": "widget"},
   {"owner": "acme", "repo": "gadget"},
   {"owner": "other-org", "repo": "tool", "usetag": true},
-  {"owner": "kubernetes-sigs", "repo": "kustomize", "tagprefix": "kyaml/"}
+  {"owner": "kubernetes-sigs", "repo": "kustomize", "tagprefix": "kyaml/"},
+  {"owner": "acme", "repo": "flaky-prereleases", "preferlatest": true}
 ]
 ```
 
@@ -134,6 +147,7 @@ Both formats are supported. Per-project options (such as `usetag` and `tagprefix
 | `repo` | string | — | Repository name |
 | `usetag` | boolean | `false` | When `true`, resolves the current version from git tags (`listTags`) instead of GitHub Releases. Picks the most recent matching tag. Useful when a project does not keep GitHub Releases up-to-date. |
 | `tagprefix` | string | `""` | When set, only releases/tags whose name starts with this string are considered. Enables independent tracking of multiple subprojects within a single monorepo (e.g. `"kyaml/"` in `kubernetes-sigs/kustomize`). The cache key becomes `owner/repo#tagprefix`, so each prefix is tracked separately. |
+| `preferlatest` | boolean | `false` | When `true`, always prefers the latest stable release over a newer pre-release, even if the pre-release is more recent. Useful when a project's pre-releases sometimes don't publish the required build artifacts. Ignored when `usetag` is `true`. If no stable release exists yet, the pre-release is still used as a fallback. |
 
 ---
 
@@ -155,7 +169,8 @@ This action produces no declared outputs. Side effects are described below.
 └───────────────────┬──────────────────────────────────┘
                     │ cached tag map
 ┌───────────────────▼──────────────────────────────────┐
-│ 2. For each (owner, repo, usetag?, tagprefix?) pair: │
+│ 2. For each (owner,repo,usetag?,tagprefix?,          │
+│    preferlatest?) pair:                              │
 │    cache key = owner/repo  or  owner/repo#tagprefix  │
 │                                                      │
 │    usetag=true            usetag=false (default)     │
@@ -166,6 +181,8 @@ This action produces no declared outputs. Side effects are described below.
 │    pick first match         listReleases (≤10×100)   │
 │    type = "tag"           pick newest pre-release     │
 │    meta = {commit}         and "latest"; newer wins   │
+│                           unless preferlatest=true    │
+│                           → release always wins       │
 │                           type = "release"|"pre…"    │
 │                           meta = {published_at,       │
 │                                   html_url}           │
@@ -197,7 +214,7 @@ This action produces no declared outputs. Side effects are described below.
      - **No `tagprefix`**: calls `GET /repos/{owner}/{repo}/releases/latest` (GitHub's own *latest* designation — most-recent non-prerelease, non-draft release by `created_at`) for the stable candidate, then paginates `listReleases` to find the most-recent pre-release. Using the dedicated endpoint means a repository that has promoted a new major version to *latest* (e.g. Helm v4 over v3) is detected immediately.
      - **With `tagprefix`**: paginates up to 10 pages of 100 releases via `listReleases`, filtering each page to releases whose `tag_name` starts with the prefix; pagination stops as soon as both the most-recent pre-release and stable release matching the prefix are found. (`getLatestRelease` is not prefix-aware, so pagination is required here.)
 
-     In both cases, selects whichever candidate is newer by `published_at` (pre-release wins when newer than stable). Metadata included: `published_at`, `html_url`.
+     In both cases, selects whichever candidate is newer by `published_at` (pre-release wins when newer than stable) — unless `preferlatest: true` is set on the entry, in which case the stable release is always selected when one exists, regardless of which is newer (falling back to the pre-release only if no stable release exists yet). Metadata included: `published_at`, `html_url`.
    - **Tag mode** (`usetag: true`): paginates up to 10 pages of 100 tags each via `listTags` (newest first). When `tagprefix` is set, picks the first tag whose name starts with the prefix; otherwise picks the very first tag. Metadata included: `commit` (SHA). Useful when a project publishes git tags but does not maintain GitHub Releases.
 
    Each entry is identified by a **cache key** of `owner/repo` (no prefix) or `owner/repo#tagprefix` (with prefix), so multiple subprojects of the same repository are tracked independently. The selected tag is compared against the cached value for that key. If it differs, `hasNewRelease` is set to `true`. Either way the entry `{owner, repo, tag, type, tagprefix, …meta}` is appended to the `changes` array. After all pairs are processed, if `hasNewRelease` is `true` a single [`repository_dispatch`](https://docs.github.com/en/rest/repos/repos#create-a-repository-dispatch-event) event is fired; the `changes` payload always contains **all** successfully fetched projects — not just the ones that changed — so downstream workflows have a complete snapshot of every monitored repo. A failed API call for one pair is logged and skipped; the remaining pairs are processed normally.

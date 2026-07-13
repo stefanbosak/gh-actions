@@ -3,13 +3,13 @@ description: >
   Monitors one or more GitHub repositories for new releases.
   Accepts a JSON array or object of (owner, repo) pairs.
   Uses GitHub's "latest" release designation (no tagprefix) or paginated lookup (tagprefix).
-  Prefers a pre-release when it is newer than the latest stable release.
+  Prefers a pre-release when it is newer than the latest stable release, unless preferlatest is set.
   Supports tagprefix to track individual subprojects within a monorepo.
 
 inputs:
   projects:
     description: |
-      JSON array of {owner, repo, usetag?, tagprefix?} objects, or a JSON object mapping owner → repo.
+      JSON array of {owner, repo, usetag?, tagprefix?, preferlatest?} objects, or a JSON object mapping owner → repo.
       Array:  [{"owner":"acme","repo":"widget"},{"owner":"acme","repo":"gadget","usetag":true}]
       Object: {"acme":"widget"}
       usetag (default false): when true, resolves the latest version via git tags instead of
@@ -17,6 +17,10 @@ inputs:
       tagprefix (optional): filter releases/tags by this prefix string. Useful for monorepos that
       publish multiple subprojects with prefixed tags (e.g. "kyaml/" in kubernetes-sigs/kustomize).
       Each unique owner/repo/tagprefix combination is tracked independently in the cache.
+      preferlatest (default false): when true, always prefers the latest stable release over a
+      newer pre-release — useful when a project's pre-releases don't publish the required build
+      artifacts. Ignored when usetag is true. Has no effect if no stable release exists yet
+      (the pre-release is still used as a fallback).
       Example (kustomize subprojects):
         [
           {"owner":"kubernetes-sigs","repo":"kustomize","tagprefix":"kustomize/"},
@@ -74,7 +78,7 @@ runs:
           const changes = [];   // all successfully fetched projects (full snapshot for payload)
           let hasNewRelease = false;
 
-          for (const { owner, repo, usetag, tagprefix } of pairs) {
+          for (const { owner, repo, usetag, tagprefix, preferlatest } of pairs) {
             // Include tagprefix in the key so each subproject is tracked independently
             const key = tagprefix ? `${owner}/${repo}#${tagprefix}` : `${owner}/${repo}`;
             let tag = '', type = '', meta = {};
@@ -139,9 +143,14 @@ runs:
 
               let selected;
               if (prerelease && release) {
-                const newer = new Date(prerelease.published_at) > new Date(release.published_at);
-                selected = newer ? prerelease : release;
-                type     = newer ? 'prerelease' : 'release';
+                if (preferlatest) {
+                  // Pre-release skipped even if newer — some pre-releases don't ship required artifacts.
+                  selected = release; type = 'release';
+                } else {
+                  const newer = new Date(prerelease.published_at) > new Date(release.published_at);
+                  selected = newer ? prerelease : release;
+                  type     = newer ? 'prerelease' : 'release';
+                }
               } else if (prerelease) {
                 selected = prerelease; type = 'prerelease';
               } else if (release) {

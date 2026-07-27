@@ -33,7 +33,7 @@ runs:
   steps:
     # Restore with a prefix — always gets the most recently saved entry
     - name: Restore cached last-known tags
-      uses: actions/cache/restore@main
+      uses: actions/cache/restore@v6.1.0
       with:
         path: .last-known-tags.json
         key: last-known-${{ github.run_id }}   # never matches (forces restore-keys lookup)
@@ -192,7 +192,7 @@ runs:
 
     # Save with a unique key each run — avoids the "already exists" conflict
     - name: Update cache
-      uses: actions/cache/save@main
+      uses: actions/cache/save@v6.1.0
       with:
         path: .last-known-tags.json
         key: last-known-${{ github.run_id }}
